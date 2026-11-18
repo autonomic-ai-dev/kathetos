@@ -1,0 +1,21 @@
+[package]
+name = "kathetos"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Plumb line for coding agents: diff-scoped dependency and test-integrity checks."
+repository = "https://github.com/autonomic-ai-dev/kathetos"
+readme = "README.md"
+
+[[bin]]
+name = "kathetos"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
