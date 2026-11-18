@@ -191,6 +191,7 @@ fn main() {
         violations.extend(v);
         forks.append(&mut fs_forks);
         forks.extend(rules::hygiene(f));
+        forks.extend(rules::infra(f));
     }
 
     // ---- forks from the dependency delta ---------------------------------

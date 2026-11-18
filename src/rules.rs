@@ -5,7 +5,8 @@
 //! deleted for requiring the outside world is maintenance, not coverage loss, so
 //! it warns. Everything else in this file is a fork item and never an exit code.
 
-use crate::diff::{Change, FileDiff, Kind};
+use crate::cards::{self, Infra};
+use crate::diff::{Change, FileDiff, Kind, Status};
 
 pub struct Violation {
     pub file: String,
@@ -355,4 +356,167 @@ fn mentions(text: &str, name: &str) -> bool {
 
 fn ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// A new file that declares a runtime process, an image, or a workload. Only
+/// files the diff adds: editing an existing compose file is a change to a
+/// decision already made, not a new one.
+pub fn infra(file: &FileDiff) -> Vec<Fork> {
+    if file.status != Status::Added {
+        return Vec::new();
+    }
+    let Some(kind) = infra_kind(file) else {
+        return Vec::new();
+    };
+    let card = cards::infra(kind);
+    let (title, weight) = match kind {
+        Infra::Compose => ("docker-compose file added", 4),
+        Infra::Dockerfile => ("Dockerfile added", 2),
+        Infra::KubeWorkload => ("Kubernetes workload manifest added", 4),
+        Infra::Helm => ("Helm chart added", 2),
+    };
+    vec![Fork {
+        file: file.path.clone(),
+        line: 1,
+        count: 1,
+        title: title.to_string(),
+        native: card.native.to_string(),
+        cost: card.cost.to_string(),
+        ask: card.ask.to_string(),
+        weight,
+    }]
+}
+
+fn infra_kind(file: &FileDiff) -> Option<Infra> {
+    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+    if matches!(
+        name,
+        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml"
+    ) {
+        return Some(Infra::Compose);
+    }
+    if name == "Dockerfile" || name.starts_with("Dockerfile.") || name.ends_with(".Dockerfile") {
+        return Some(Infra::Dockerfile);
+    }
+    if name == "Chart.yaml" {
+        return Some(Infra::Helm);
+    }
+    if (name.ends_with(".yaml") || name.ends_with(".yml")) && is_kube_workload(file) {
+        return Some(Infra::KubeWorkload);
+    }
+    None
+}
+
+/// Top-level keys only: an unindented `apiVersion:` and `kind:` pair naming a
+/// workload controller. A nested `kind:` belongs to some other object.
+fn is_kube_workload(file: &FileDiff) -> bool {
+    let has_api = file.added().any(|c| c.text.starts_with("apiVersion:"));
+    let has_workload = file.added().any(|c| {
+        c.text
+            .strip_prefix("kind:")
+            .map(|k| matches!(k.trim(), "Deployment" | "StatefulSet" | "DaemonSet"))
+            .unwrap_or(false)
+    });
+    has_api && has_workload
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn added(path: &str, status: Status, lines: &[&str]) -> FileDiff {
+        FileDiff {
+            path: path.to_string(),
+            old_path: path.to_string(),
+            status,
+            changes: lines
+                .iter()
+                .enumerate()
+                .map(|(i, t)| Change {
+                    kind: Kind::Add,
+                    text: t.to_string(),
+                    new_no: i as u32 + 1,
+                    old_no: 0,
+                })
+                .collect(),
+        }
+    }
+
+    fn titles(f: &FileDiff) -> Vec<String> {
+        infra(f).into_iter().map(|x| x.title).collect()
+    }
+
+    const DEPLOY: &[&str] = &["apiVersion: apps/v1", "kind: Deployment", "metadata:", "  name: api"];
+
+    #[test]
+    fn new_compose_file_fires() {
+        let f = added("docker-compose.yml", Status::Added, &["services:", "  db:"]);
+        assert_eq!(titles(&f), ["docker-compose file added"]);
+    }
+
+    #[test]
+    fn compose_v2_name_fires_in_subdirectory() {
+        let f = added("deploy/compose.yaml", Status::Added, &["services:"]);
+        assert_eq!(titles(&f), ["docker-compose file added"]);
+    }
+
+    #[test]
+    fn existing_compose_file_is_silent() {
+        let f = added("docker-compose.yml", Status::Modified, &["  cache:"]);
+        assert!(titles(&f).is_empty());
+    }
+
+    #[test]
+    fn dockerfile_variants_fire() {
+        for path in ["Dockerfile", "services/api/Dockerfile", "Dockerfile.worker", "api.Dockerfile"] {
+            let f = added(path, Status::Added, &["FROM scratch"]);
+            assert_eq!(titles(&f), ["Dockerfile added"], "{path}");
+        }
+    }
+
+    #[test]
+    fn helm_chart_fires() {
+        let f = added("chart/Chart.yaml", Status::Added, &["name: api", "version: 0.1.0"]);
+        assert_eq!(titles(&f), ["Helm chart added"]);
+    }
+
+    #[test]
+    fn deployment_manifest_fires() {
+        let f = added("k8s/api.yaml", Status::Added, DEPLOY);
+        assert_eq!(titles(&f), ["Kubernetes workload manifest added"]);
+    }
+
+    #[test]
+    fn statefulset_manifest_fires_in_yml() {
+        let f = added("k8s/db.yml", Status::Added, &["apiVersion: apps/v1", "kind: StatefulSet"]);
+        assert_eq!(titles(&f), ["Kubernetes workload manifest added"]);
+    }
+
+    #[test]
+    fn service_only_manifest_is_silent() {
+        let f = added("k8s/svc.yaml", Status::Added, &["apiVersion: v1", "kind: Service"]);
+        assert!(titles(&f).is_empty());
+    }
+
+    #[test]
+    fn nested_kind_is_not_a_workload() {
+        let f = added(
+            "k8s/cfg.yaml",
+            Status::Added,
+            &["apiVersion: v1", "kind: ConfigMap", "spec:", "  kind: Deployment"],
+        );
+        assert!(titles(&f).is_empty());
+    }
+
+    #[test]
+    fn ci_workflow_yaml_is_silent() {
+        let f = added(".github/workflows/ci.yml", Status::Added, &["on: push", "jobs:"]);
+        assert!(titles(&f).is_empty());
+    }
+
+    #[test]
+    fn source_file_is_silent() {
+        let f = added("src/main.rs", Status::Added, DEPLOY);
+        assert!(titles(&f).is_empty());
+    }
 }

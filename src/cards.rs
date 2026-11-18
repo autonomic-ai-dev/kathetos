@@ -103,3 +103,38 @@ pub fn card(dep: &str) -> Option<Card> {
     };
     Some(c)
 }
+
+/// Infrastructure files added to a diff. These are not dependencies, so they
+/// have their own catalogue, keyed by what the file declares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Infra {
+    Compose,
+    Dockerfile,
+    KubeWorkload,
+    Helm,
+}
+
+pub fn infra(kind: Infra) -> Card {
+    match kind {
+        Infra::Compose => Card {
+            native: "one systemd --user unit per process, Restart=on-failure, EnvironmentFile",
+            cost: "the Compose file becomes a second description of the system that production never runs",
+            ask: "does every service in this file run only on the developer's own machine?",
+        },
+        Infra::Dockerfile => Card {
+            native: "ship the compiled binary under a systemd unit, built in CI",
+            cost: "a base image to rebuild for every OS patch, a registry to keep alive, a build context that drifts",
+            ask: "does the target consume images, or one binary on a host you own?",
+        },
+        Infra::KubeWorkload => Card {
+            native: "a systemd unit with Restart=always and MemoryMax=, caddy in front for TLS",
+            cost: "a control plane, a YAML surface and a node-upgrade cadence for one binary",
+            ask: "does this need horizontal scaling on real traffic, or a cluster you already run?",
+        },
+        Infra::Helm => Card {
+            native: "plain manifests applied with kubectl apply, or the systemd unit",
+            cost: "a template language between the reviewer and the manifest that actually runs",
+            ask: "does the chart hold three or more workloads that share a release?",
+        },
+    }
+}

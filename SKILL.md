@@ -101,14 +101,27 @@ Read only the card that matches. Do not load the directory.
 | 04 · anyhow in a library | `anyhow` added under a `lib.rs`/published crate |
 | 05 · Derive-macro crates for hand-writable impls | `derive_more`/`strum`/`thiserror` for ≤ 2 impls |
 
+**Docker** — `patterns/docker/`
+| Card | Fires on |
+|---|---|
+| 01 · Compose for local services | a compose file added (`docker-compose.yml`, `compose.yaml`) |
+| 02 · Dockerfile for one binary | a `Dockerfile` added |
+| 03 · Container per "host" | new container just for address/port isolation |
+
+**Kubernetes** — `patterns/kubernetes/`
+| Card | Fires on |
+|---|---|
+| 01 · Kubernetes for one service | a manifest added with `kind: Deployment`/`StatefulSet`/`DaemonSet` |
+| 02 · Helm for one chart | a `Chart.yaml` added |
+
 **Linux / bare metal** — `patterns/linux/`
 | Card | Fires on |
 |---|---|
-| 01 · Compose for local services | `docker-compose.yml` added |
-| 02 · Redis as a queue | `redis` client added for jobs |
-| 03 · Kubernetes for one deployable | k8s manifests added, one image |
-| 04 · In-app ticker | `time.Ticker`/`tokio::interval`/`setInterval` for housekeeping |
-| 05 · Container per "host" | new container just for address/port isolation |
+| 01 · Redis as a queue | `redis` client added for jobs |
+| 02 · In-app ticker | `time.Ticker`/`tokio::interval`/`setInterval` for housekeeping |
+
+The Docker and Kubernetes rows fire from the checker (`rules::infra`), and only
+for files the diff adds.
 
 At merge time, the same grammar renders as a receipt — see `RECEIPT-SPEC.md`.
 One format, two moments: before the code, and before the merge.

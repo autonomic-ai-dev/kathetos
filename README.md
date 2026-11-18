@@ -9,7 +9,7 @@ Two failure modes, two moments, one format:
 
 | | Moment | Artifact |
 |---|---|---|
-| Agent inflates architecture | before codegen | `SKILL.md` + 15 cards → a 6-line fork |
+| Agent inflates architecture | before codegen | `SKILL.md` + 17 cards → a 6-line fork |
 | You merge what you can't defend | before merge | `RECEIPT-SPEC.md` → a 3-item receipt |
 
 Both render the same four lines: **decision · boring native option · 6-month
@@ -68,7 +68,7 @@ The content is plain markdown; Codex and OpenCode read the same file.
 
 ## The cards
 
-Fifteen decision points, each with a `Skip when` line — because the fastest way
+Seventeen decision points, each with a `Skip when` line — because the fastest way
 to make a tool useless is to fire on the cases where the boring option is wrong.
 
 **Go** — HTTP timeout · framework for twelve routes · logger where `log/slog`
@@ -77,8 +77,12 @@ exists · unbounded goroutines · error masking
 **Rust** — tokio for a CLI · reqwest for one call · trait object for one impl ·
 anyhow in a library · derive-macro crates for hand-writable impls
 
-**Linux** — Compose for local services · Redis as a queue · Kubernetes for one
-deployable · in-app ticker · container per "host"
+**Docker** — Compose for local services · Dockerfile for one binary · container
+per "host"
+
+**Kubernetes** — Kubernetes for one service · Helm for one chart
+
+**Linux** — Redis as a queue · in-app ticker
 
 Error masking and `.unwrap()` are cards, not checks. A diff can tell you an error
 was discarded; only a person can tell you whether it mattered.
@@ -103,6 +107,6 @@ a judgement about the code.
 
 ## License
 
-Apache-2.0. All fifteen cards are written clean-room from the underlying idea;
+Apache-2.0. All seventeen cards are written clean-room from the underlying idea;
 no text is copied from any source, including CC BY-NC-ND sources such as
 `teivah/100-go-mistakes` (ideas cited, text never reproduced).
