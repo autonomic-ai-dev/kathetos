@@ -1,0 +1,10 @@
+[verify]
+commands = [
+  ".verify/run.sh",
+  ".verify/run.sh all",
+]
+
+[verify.default]
+command = [".verify/run.sh"]
+timeout_secs = 900
+hook = false
