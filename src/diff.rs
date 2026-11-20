@@ -136,6 +136,16 @@ fn sides(range: &str) -> (String, String) {
 
 pub fn load(range: &str) -> Result<Diff, String> {
     let (left, right) = sides(range);
+    for side in [&left, &right] {
+        if git(&["rev-parse", "--verify", "--quiet", &format!("{side}^{{commit}}")]).is_err() {
+            let hint = if side.starts_with("origin/") {
+                "\n  hint: a shallow clone may lack it: git fetch --deepen=50 origin"
+            } else {
+                ""
+            };
+            return Err(format!("unknown revision `{side}`{hint}"));
+        }
+    }
     let base = git(&["merge-base", &left, &right])
         .or_else(|_| git(&["rev-parse", &left]))
         .map_err(|_| format!("cannot resolve merge base for `{range}`"))?

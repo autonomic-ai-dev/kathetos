@@ -73,10 +73,15 @@ fn main() {
         Err(e) => {
             eprintln!("kathetos · {range}");
             eprintln!("  0 files · {e}");
-            eprintln!("  hint: git fetch --deepen=50 origin");
             exit(2);
         }
     };
+
+    if d.files.is_empty() {
+        eprintln!("kathetos · {range}");
+        eprintln!("  0 files · empty diff, nothing to check");
+        exit(2);
+    }
 
     if args.verbose {
         for f in &d.files {
@@ -102,10 +107,11 @@ fn main() {
     want(format!("{}:Cargo.lock", d.head), &mut specs);
     want(format!("{}:Cargo.lock", d.base), &mut specs);
     for f in &d.files {
-        if f.path.ends_with("Cargo.toml") || rules::added_marker(&f.path, &f.changes) {
+        let (want_new, want_old) = rules::contents_needed(f);
+        if f.path.ends_with("Cargo.toml") || want_new {
             want(format!("{}:{}", d.head, f.path), &mut specs);
         }
-        if rules::removed_marker(&f.path, &f.changes) && !f.old_path.is_empty() {
+        if want_old {
             want(format!("{}:{}", d.base, f.old_path), &mut specs);
         }
     }
@@ -169,25 +175,16 @@ fn main() {
     let mut violations: Vec<Violation> = Vec::new();
 
     for f in &d.files {
-        let is_test = f.path.ends_with("_test.go")
-            || f.path.ends_with("_test.rs")
-            || f.path.starts_with("tests/")
-            || f.path.contains("/tests/")
-            || rules::any_marker(&f.path, &f.changes);
-
-        let new_content = if rules::added_marker(&f.path, &f.changes) {
-            new_of(&f.path)
-        } else {
-            None
-        };
-        let old_content = if rules::removed_marker(&f.path, &f.changes) && !f.old_path.is_empty() {
+        let (want_new, want_old) = rules::contents_needed(f);
+        let new_content = if want_new { new_of(&f.path) } else { None };
+        let old_content = if want_old {
             blobs.get(&format!("{}:{}", d.base, f.old_path)).cloned()
         } else {
             None
         };
 
         let (v, mut fs_forks) =
-            rules::tests(f, new_content.as_deref(), old_content.as_deref(), is_test);
+            rules::tests(f, new_content.as_deref(), old_content.as_deref());
         violations.extend(v);
         forks.append(&mut fs_forks);
         forks.extend(rules::hygiene(f));
@@ -195,70 +192,83 @@ fn main() {
     }
 
     // ---- forks from the dependency delta ---------------------------------
-    if let Some(dl) = &delta {
-        if dl.direct.len() >= 4 {
-            forks.push(Fork {
-                file: dl.direct[0].2.clone(),
-                count: 1,
-                line: dl.direct[0].1,
-                title: format!("{} direct deps for one change", dl.direct.len()),
-                native: "ship the part of the feature that needs none of them".to_string(),
-                cost: format!(
-                    "+{} packages, {} already in the tree",
-                    dl.fresh,
-                    dl.already
-                ),
-                ask: "which of these does the diff call directly?".to_string(),
-                weight: 4,
-            });
-        }
-        for (dep, fresh, nuses) in &dl.per_dep {
-            let loc = dl
-                .direct
-                .iter()
-                .find(|(d, _, _)| d == dep)
-                .map(|(_, l, f)| (f.clone(), *l))
-                .unwrap_or((String::from("Cargo.toml"), 0));
+    const UNMEASURED: &str = "transitive cost unmeasured (no Cargo.lock in this repo)";
+    let per_dep: Vec<(String, Option<usize>, usize)> = match &delta {
+        Some(dl) => dl
+            .per_dep
+            .iter()
+            .map(|(d, fresh, nuses)| (d.clone(), Some(*fresh), *nuses))
+            .collect(),
+        None => direct
+            .iter()
+            .map(|(d, _, _)| (d.clone(), None, uses.get(d).copied().unwrap_or(0)))
+            .collect(),
+    };
 
-            if *nuses == 0 {
-                let c = cards::card(dep);
-                forks.push(Fork {
-                    file: loc.0,
-                    line: loc.1,
-                    count: 1,
-                    title: format!("{dep} added, 0 references in this diff"),
-                    native: c
-                        .as_ref()
-                        .map(|c| c.native.to_string())
-                        .unwrap_or_else(|| "remove it until the change that uses it".to_string()),
-                    cost: c
-                        .as_ref()
-                        .map(|c| c.cost.to_string())
-                        .unwrap_or_else(|| {
-                            format!("+{fresh} package{} with no caller yet", if *fresh == 1 { "" } else { "s" })
-                        }),
-                    ask: c
-                        .as_ref()
-                        .map(|c| c.ask.to_string())
-                        .unwrap_or_else(|| "was this added for a later change?".to_string()),
-                    weight: 3,
-                });
-            } else if let Some(c) = cards::card(dep) {
-                forks.push(Fork {
-                    file: loc.0,
-                    line: loc.1,
-                    count: 1,
-                    title: format!("{dep} added ({nuses} ref{})", if *nuses == 1 { "" } else { "s" }),
-                    native: c.native.to_string(),
-                    cost: if *fresh == 0 {
-                        "+0 packages: already in the tree".to_string()
-                    } else {
-                        format!("+{fresh} package{}", if *fresh == 1 { "" } else { "s" })
-                    },
-                    ask: c.ask.to_string(),
-                    weight: 3,
-                });
-            }
+    if direct.len() >= 4 {
+        let cost = match &delta {
+            Some(dl) => format!("+{} packages, {} already in the tree", dl.fresh, dl.already),
+            None => UNMEASURED.to_string(),
+        };
+        forks.push(Fork {
+            file: direct[0].2.clone(),
+            count: 1,
+            line: direct[0].1,
+            title: format!("{} direct deps for one change", direct.len()),
+            native: "ship the part of the feature that needs none of them".to_string(),
+            cost,
+            ask: "which of these does the diff call directly?".to_string(),
+            weight: 4,
+        });
+    }
+
+    for (dep, fresh, nuses) in &per_dep {
+        let loc = direct
+            .iter()
+            .find(|(d, _, _)| d == dep)
+            .map(|(_, l, f)| (f.clone(), *l))
+            .unwrap_or((String::from("Cargo.toml"), 0));
+        let card = cards::card(dep);
+
+        if *nuses == 0 {
+            let cost = match (&card, fresh) {
+                (Some(c), Some(_)) => c.cost.to_string(),
+                (Some(c), None) => format!("{}; {UNMEASURED}", c.cost),
+                (None, Some(n)) => format!("+{n} package{} with no caller yet", if *n == 1 { "" } else { "s" }),
+                (None, None) => UNMEASURED.to_string(),
+            };
+            forks.push(Fork {
+                file: loc.0,
+                line: loc.1,
+                count: 1,
+                title: format!("{dep} added, 0 references in this diff"),
+                native: card
+                    .as_ref()
+                    .map(|c| c.native.to_string())
+                    .unwrap_or_else(|| "remove it until the change that uses it".to_string()),
+                cost,
+                ask: card
+                    .as_ref()
+                    .map(|c| c.ask.to_string())
+                    .unwrap_or_else(|| "was this added for a later change?".to_string()),
+                weight: 3,
+            });
+        } else if let Some(c) = card {
+            let cost = match fresh {
+                Some(0) => "+0 packages: already in the tree".to_string(),
+                Some(n) => format!("+{n} package{}", if *n == 1 { "" } else { "s" }),
+                None => UNMEASURED.to_string(),
+            };
+            forks.push(Fork {
+                file: loc.0,
+                line: loc.1,
+                count: 1,
+                title: format!("{dep} added ({nuses} ref{})", if *nuses == 1 { "" } else { "s" }),
+                native: c.native.to_string(),
+                cost,
+                ask: c.ask.to_string(),
+                weight: 3,
+            });
         }
     }
 
@@ -268,17 +278,27 @@ fn main() {
             .then_with(|| a.file.cmp(&b.file))
             .then_with(|| a.line.cmp(&b.line))
     });
-    // Collapse repeats: four identical skips are one finding with a count.
+    // Collapse repeats within one file: four identical skips in a file are one
+    // finding with a count. Keyed by file too, so the location shown is real.
     let mut deduped: Vec<Fork> = Vec::new();
     for f in forks {
-        match deduped.iter_mut().find(|e| e.title == f.title) {
+        match deduped
+            .iter_mut()
+            .find(|e| e.title == f.title && e.file == f.file)
+        {
             Some(e) => e.count += 1,
             None => deduped.push(f),
         }
     }
     let mut forks = deduped;
-    let cap = if violations.is_empty() { 3 } else { 2 };
+    let total_forks = forks.len();
+    let cap = match (args.verbose, violations.is_empty()) {
+        (true, _) => usize::MAX,
+        (false, true) => 3,
+        (false, false) => 2,
+    };
     forks.truncate(cap);
+    let omitted = total_forks - forks.len();
 
     let ms = started.elapsed().as_millis();
     let blocked = !violations.is_empty();
@@ -296,6 +316,7 @@ fn main() {
                 &delta,
                 &violations,
                 &forks,
+                omitted,
                 blocked
             )
         );
@@ -306,10 +327,10 @@ fn main() {
             if d.files.len() == 1 { "" } else { "s" }
         );
         for v in &violations {
-            println!("violation: {} ({}:{})", v.rule, v.file, v.line);
+            println!("violation: {} ({}:{}) [{}]", v.rule, v.file, v.line, rules::BASIS);
         }
         if !forks.is_empty() {
-            println!("forks: {}", forks.len());
+            println!("forks: {total_forks}");
             for (i, f) in forks.iter().enumerate() {
                 let more = if f.count > 1 {
                     format!(" (x{})", f.count)
@@ -320,6 +341,9 @@ fn main() {
                 println!("   native: {}", f.native);
                 println!("   6mo:    {}", f.cost);
                 println!("   ask:    {}", f.ask);
+            }
+            if omitted > 0 {
+                println!("   … {omitted} more not shown (--verbose lists all)");
             }
         }
     }
@@ -382,6 +406,7 @@ fn to_json(
     delta: &Option<lock::CargoDelta>,
     violations: &[Violation],
     forks: &[Fork],
+    omitted: usize,
     blocked: bool,
 ) -> String {
     let deps = match delta {
@@ -398,10 +423,11 @@ fn to_json(
         .iter()
         .map(|v| {
             format!(
-                "{{\"file\":\"{}\",\"line\":{},\"rule\":\"{}\"}}",
+                "{{\"file\":\"{}\",\"line\":{},\"rule\":\"{}\",\"basis\":\"{}\"}}",
                 esc(&v.file),
                 v.line,
-                esc(v.rule)
+                esc(v.rule),
+                rules::BASIS
             )
         })
         .collect();
@@ -423,7 +449,7 @@ fn to_json(
         .collect();
 
     format!(
-        "{{\"v\":1,\"lang\":\"{}\",\"files\":{},\"ms\":{},\"summary\":\"{}\",\"deps\":{},\"violations\":[{}],\"forks\":[{}],\"blocked\":{}}}",
+        "{{\"v\":1,\"lang\":\"{}\",\"files\":{},\"ms\":{},\"summary\":\"{}\",\"deps\":{},\"violations\":[{}],\"forks\":[{}],\"forks_omitted\":{},\"blocked\":{}}}",
         language,
         files,
         ms,
@@ -431,6 +457,7 @@ fn to_json(
         deps,
         vs.join(","),
         fs.join(","),
+        omitted,
         blocked
     )
 }
